@@ -4,7 +4,7 @@ from jose import jwt, JWTError
 
 security = HTTPBearer()
 
-SECRET_KEY = "your_secret_key"  # same one used in create_access_token
+SECRET_KEY = "inventory_system_secret_2026"  # same one used in create_access_token
 ALGORITHM = "HS256"
 
 
