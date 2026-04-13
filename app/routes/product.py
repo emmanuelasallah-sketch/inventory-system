@@ -9,52 +9,34 @@ router = APIRouter(prefix="/products", tags=["Products"])
 @router.post("/")
 def create_product(product: dict):
     response = supabase.table("products").insert({
-        "name": product["name"],
-        "size": product.get("size"),
-        "price": product.get("price"),
-        "stock": product.get("stock", 0),
-        "expiry_date": product.get("expiry_date"),
-        "min_stock": product.get("min_stock", 5)
-    }).execute()
-
+                    "name": product["name"],
+                    "size": product.get("size"),
+                    "price": float(product.get("price", 0)),
+                    "stock": int(product.get("stock", 0)),
+                    "expiry_date": product.get("expiry_date"),
+                    "min_stock": product.get("min_stock", 5),
+                    "category": product.get("category"),
+                }).execute()
     return response.data
 
 
 # ✅ GET PRODUCTS (FULL DATA + FLAGS)
 @router.get("/")
 def get_products(search: str = None):
-    # 🚫 If no search, return empty (prevents showing all products)
-    if not search or search.strip() == "":
-        return []
+    query = supabase.table("products").select("*")
 
-    response = supabase.table("products") \
-        .select("*") \
-        .ilike("name", f"%{search}%") \
-        .execute()
+    # ✅ Only filter if search exists
+    if search and search.strip() != "":
+        query = query.ilike("name", f"%{search}%")
 
+    response = query.execute()
     products = response.data
 
     for p in products:
         stock = p.get("stock", 0)
         min_stock = p.get("min_stock", 0)
 
-        # ✅ LOW STOCK FLAG
         p["low_stock"] = stock <= min_stock
-
-        # ✅ EXPIRY STATUS
-        p["expiry_status"] = None
-
-        if p.get("expiry_date"):
-            expiry = datetime.fromisoformat(p["expiry_date"])
-
-            if expiry < datetime.now():
-                p["expiry_status"] = "expired"
-
-            elif expiry < datetime.now() + timedelta(days=7):
-                p["expiry_status"] = "expiring_soon"
-
-            else:
-                p["expiry_status"] = "valid"
 
     return products
 
