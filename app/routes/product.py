@@ -194,3 +194,14 @@ def get_alerts():
                 })
 
     return alerts
+
+@router.get("/stock_history")
+def get_stock_history():
+    res = supabase.table("stock_history").select("*").order("created_at", desc=True).execute()
+    return res.data
+
+
+@router.get("/sales_history")
+def get_sales_history():
+    res = supabase.table("sales_history").select("*").order("created_at", desc=True).execute()
+    return res.data
