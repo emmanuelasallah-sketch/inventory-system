@@ -8,34 +8,63 @@ router = APIRouter(prefix="/products", tags=["Products"])
 # ✅ CREATE PRODUCT
 @router.post("/")
 def create_product(product: dict):
-    response = supabase.table("products").insert({
-                    "name": product["name"],
-                    "size": product.get("size"),
-                    "price": float(product.get("price", 0)),
-                    "stock": int(product.get("stock", 0)),
-                    "expiry_date": product.get("expiry_date"),
-                    "min_stock": product.get("min_stock", 5),
-                    "category": product.get("category"),
-                }).execute()
-    return response.data
+    # 🔍 Check if product exists (same name + size)
+    existing = supabase.table("products") \
+        .select("*") \
+        .eq("name", product["name"]) \
+        .eq("size", product.get("size")) \
+        .execute()
+
+    if existing.data:
+        # ✅ UPDATE STOCK
+        existing_product = existing.data[0]
+        new_stock = existing_product["stock"] + int(product.get("stock", 0))
+
+        supabase.table("products").update({
+            "stock": new_stock
+        }).eq("id", existing_product["id"]).execute()
+
+        # ✅ RECORD STOCK HISTORY
+        supabase.table("stock_history").insert({
+            "product_id": existing_product["id"],
+            "name": product["name"],
+            "quantity_added": int(product.get("stock", 0))
+        }).execute()
+
+        return {"message": "Stock updated", "new_stock": new_stock}
+
+    # 🆕 CREATE NEW PRODUCT
+    new_product = supabase.table("products").insert({
+        "name": product["name"],
+        "size": product.get("size"),
+        "price": float(product.get("price", 0)),
+        "stock": int(product.get("stock", 0)),
+        "category": product.get("category"),
+        "expiry_date": product.get("expiry_date"),
+        "min_stock": product.get("min_stock", 5)
+    }).execute()
+
+    created = new_product.data[0]
+
+    # ✅ RECORD STOCK HISTORY
+    supabase.table("stock_history").insert({
+        "product_id": created["id"],
+        "name": product["name"],
+        "quantity_added": int(product.get("stock", 0))
+    }).execute()
+
+    return created
 
 
 # ✅ GET PRODUCTS (FULL DATA + FLAGS)
 @router.get("/")
 def get_products(search: str = None):
-    query = supabase.table("products").select("*")
-
-    # ✅ Only filter if search exists
-    if search and search.strip() != "":
-        query = query.ilike("name", f"%{search}%")
-
-    response = query.execute()
+    response = supabase.table("products").select("*").execute()
     products = response.data
 
     for p in products:
         stock = p.get("stock", 0)
         min_stock = p.get("min_stock", 0)
-
         p["low_stock"] = stock <= min_stock
 
     return products
@@ -63,20 +92,24 @@ def update_stock(data: dict):
         raise HTTPException(status_code=404, detail="Product not found")
 
     product = response.data[0]
+    new_quantity = product["stock"] + change
 
-    new_stock = product.get("stock", 0) + change
-
-    if new_stock < 0:
+    if new_quantity < 0:
         raise HTTPException(status_code=400, detail="Not enough stock")
 
     supabase.table("products").update({
-        "stock": new_stock
+        "stock": new_quantity
     }).eq("id", product_id).execute()
 
-    return {
-        "message": "Stock updated",
-        "new_stock": new_stock
-    }
+    # ✅ RECORD SALES HISTORY (ONLY WHEN SELLING)
+    if change < 0:
+        supabase.table("sales_history").insert({
+            "product_id": product_id,
+            "name": product["name"],
+            "quantity_sold": abs(change)
+        }).execute()
+
+    return {"message": "Stock updated", "new_quantity": new_quantity}
 
 
 # ✅ SELL PRODUCT
