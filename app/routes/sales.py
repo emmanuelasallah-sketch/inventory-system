@@ -12,35 +12,76 @@ def get_sales():
 
 
 
-@router.post("/")
-def create_sale(data: dict):
+@router.post("/checkout")
+def checkout(data: dict):
+    items = data.get("items", [])
 
-    product_res = (
-        supabase.table("products")
-        .select("*")
-        .ilike("name", f"%{data['product_name']}%")
-        .eq("size", data["size"])
-        .limit(1)
-        .execute()
-    )
+    if not items:
+        return {"error": "Cart is empty"}
 
-    if not product_res.data:
-        return {"error": "Product not found"}
+    total_amount = 0
+    processed_items = []
 
-    product = product_res.data[0]
+    # STEP 1: Validate all items first
+    for item in items:
+        product_res = (
+            supabase.table("products")
+            .select("*")
+            .ilike("name", f"%{item['product_name']}%")
+            .eq("size", item["size"])
+            .limit(1)
+            .execute()
+        )
 
-    new_qty = product["quantity"] - data["quantity"]
+        if not product_res.data:
+            return {"error": f"{item['product_name']} not found"}
 
-    if new_qty < 0:
-        return {"error": "Not enough stock"}
+        product = product_res.data[0]
 
-    supabase.table("products").update({
-        "quantity": new_qty
-    }).eq("id", product["id"]).execute()
+        if product["quantity"] < item["quantity"]:
+            return {"error": f"Not enough stock for {product['name']}"}
 
-    supabase.table("sales").insert({
-        "product_id": product["id"],
-        "quantity": data["quantity"]
+        processed_items.append({
+            "product": product,
+            "quantity": item["quantity"]
+        })
+
+    # STEP 2: Create Order
+    order_res = supabase.table("orders").insert({
+        "total_amount": 0
     }).execute()
 
-    return {"message": "Sale recorded"}
+    order_id = order_res.data[0]["id"]
+
+    # STEP 3: Process each item
+    for item in processed_items:
+        product = item["product"]
+        qty = item["quantity"]
+
+        new_qty = product["quantity"] - qty
+
+        # update stock
+        supabase.table("products").update({
+            "quantity": new_qty
+        }).eq("id", product["id"]).execute()
+
+        # insert order item
+        supabase.table("order_items").insert({
+            "order_id": order_id,
+            "product_id": product["id"],
+            "quantity": qty,
+            "price": product["price"]
+        }).execute()
+
+        total_amount += product["price"] * qty
+
+    # STEP 4: update total
+    supabase.table("orders").update({
+        "total_amount": total_amount
+    }).eq("id", order_id).execute()
+
+    return {
+        "message": "Order completed",
+        "order_id": order_id,
+        "total": total_amount
+    }
