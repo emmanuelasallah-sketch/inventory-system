@@ -5,80 +5,98 @@ from datetime import datetime, timedelta
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
+# 🔧 HELPER: CLEAN INPUT
+def normalize_text(value: str):
+    return value.strip().title() if value else None
+
+
 # ✅ CREATE OR UPDATE PRODUCT
 @router.post("/")
 def create_product(product: dict):
-    name = product.get("name")
-    size = product.get("size")
-    stock = int(product.get("stock", 0))
-    price = float(product.get("price", 0))
+    try:
+        name = normalize_text(product.get("name"))
+        size = normalize_text(product.get("size"))
+        stock = int(product.get("stock") or 0)
+        price = float(product.get("price") or 0)
 
-    if not name or not size:
-        raise HTTPException(status_code=400, detail="Name and size are required")
+        if not name or not size:
+            raise HTTPException(status_code=400, detail="Name and size are required")
 
-    # 🔍 Check if product exists (same name + size)
-    existing = supabase.table("products") \
-        .select("*") \
-        .eq("name", name) \
-        .eq("size", size) \
-        .execute()
+        # 🔍 Check if product exists
+        existing = supabase.table("products") \
+            .select("*") \
+            .eq("name", name) \
+            .eq("size", size) \
+            .execute()
 
-    if existing.data:
-        # ✅ UPDATE STOCK
-        existing_product = existing.data[0]
-        new_stock = existing_product["stock"] + stock
+        # ✅ UPDATE EXISTING PRODUCT
+        if existing.data:
+            existing_product = existing.data[0]
+            new_stock = existing_product.get("stock", 0) + stock
 
-        supabase.table("products").update({
-            "stock": new_stock,
-            "price": price or existing_product["price"]  # keep or update price
-        }).eq("id", existing_product["id"]).execute()
+            supabase.table("products").update({
+                "stock": new_stock,
+                "price": price if price > 0 else existing_product.get("price", 0)
+            }).eq("id", existing_product["id"]).execute()
 
-        # ✅ RECORD STOCK HISTORY
-        supabase.table("stock_history").insert({
-            "product_id": existing_product["id"],
+            # RECORD STOCK HISTORY
+            if stock > 0:
+                supabase.table("stock_history").insert({
+                    "product_id": existing_product["id"],
+                    "name": name,
+                    "quantity_added": stock
+                }).execute()
+
+            return {"message": "Stock updated", "new_stock": new_stock}
+
+        # 🆕 CREATE NEW PRODUCT
+        new_product = supabase.table("products").insert({
             "name": name,
-            "quantity_added": stock
+            "size": size,
+            "price": price,
+            "stock": stock,
+            "category": normalize_text(product.get("category")),
+            "expiry_date": product.get("expiry_date"),
+            "min_stock": int(product.get("min_stock") or 5)
         }).execute()
 
-        return {"message": "Stock updated", "new_stock": new_stock}
+        if not new_product.data:
+            raise HTTPException(status_code=500, detail="Failed to create product")
 
-    # 🆕 CREATE NEW PRODUCT
-    new_product = supabase.table("products").insert({
-        "name": name,
-        "size": size,
-        "price": price,
-        "stock": stock,
-        "category": product.get("category"),
-        "expiry_date": product.get("expiry_date"),
-        "min_stock": product.get("min_stock", 5)
-    }).execute()
+        created = new_product.data[0]
 
-    created = new_product.data[0]
+        # RECORD STOCK HISTORY
+        if stock > 0:
+            supabase.table("stock_history").insert({
+                "product_id": created["id"],
+                "name": name,
+                "quantity_added": stock
+            }).execute()
 
-    # ✅ RECORD STOCK HISTORY
-    supabase.table("stock_history").insert({
-        "product_id": created["id"],
-        "name": name,
-        "quantity_added": stock
-    }).execute()
+        return created
 
-    return created
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ GET PRODUCTS
 @router.get("/")
 def get_products():
-    response = supabase.table("products").select("*").execute()
-    products = response.data
+    try:
+        response = supabase.table("products").select("*").execute()
+        products = response.data or []
 
-    for p in products:
-        stock = p.get("stock", 0)
-        min_stock = p.get("min_stock", 0)
+        for p in products:
+            stock = p.get("stock", 0)
+            min_stock = p.get("min_stock", 0)
 
-        p["low_stock"] = stock <= min_stock
-        p["total_value"] = stock * p.get("price", 0)  # ✅ PRICE × STOCK
+            p["low_stock"] = stock <= min_stock
+            p["total_value"] = stock * p.get("price", 0)
 
-    return products
+        return products
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ DELETE PRODUCT
@@ -95,84 +113,92 @@ def delete_product(product_id: str):
 # ✅ STOCK UPDATE
 @router.post("/stock")
 def update_stock(data: dict):
-    product_id = data.get("product_id")
-    change = int(data.get("change", 0))
+    try:
+        product_id = data.get("product_id")
+        change = int(data.get("change") or 0)
 
-    response = supabase.table("products").select("*").eq("id", product_id).execute()
+        response = supabase.table("products").select("*").eq("id", product_id).execute()
 
-    if not response.data:
-        raise HTTPException(status_code=404, detail="Product not found")
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Product not found")
 
-    product = response.data[0]
-    new_stock = product["stock"] + change
+        product = response.data[0]
+        new_stock = product.get("stock", 0) + change
 
-    if new_stock < 0:
-        raise HTTPException(status_code=400, detail="Not enough stock")
+        if new_stock < 0:
+            raise HTTPException(status_code=400, detail="Not enough stock")
 
-    supabase.table("products").update({
-        "stock": new_stock
-    }).eq("id", product_id).execute()
+        supabase.table("products").update({
+            "stock": new_stock
+        }).eq("id", product_id).execute()
 
-    # ✅ RECORD SALES HISTORY (ONLY WHEN SELLING)
-    if change < 0:
-        supabase.table("sales_history").insert({
-            "product_id": product_id,
-            "name": product["name"],
-            "quantity_sold": abs(change)
-        }).execute()
+        # RECORD SALES HISTORY
+        if change < 0:
+            supabase.table("sales_history").insert({
+                "product_id": product_id,
+                "name": product["name"],
+                "quantity_sold": abs(change)
+            }).execute()
 
-    return {"message": "Stock updated", "new_stock": new_stock}
+        return {"message": "Stock updated", "new_stock": new_stock}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ✅ SELL PRODUCT (FIXED)
+# ✅ SELL PRODUCT
 @router.post("/sell")
 def sell_product(data: dict):
-    name = data.get("name")
-    size = data.get("size")
-    quantity = int(data.get("quantity", 0))
+    try:
+        name = normalize_text(data.get("name"))
+        size = normalize_text(data.get("size"))
+        quantity = int(data.get("quantity") or 0)
 
-    if not name or not size or quantity <= 0:
-        raise HTTPException(status_code=400, detail="Invalid input")
+        if not name or not size or quantity <= 0:
+            raise HTTPException(status_code=400, detail="Invalid input")
 
-    response = supabase.table("products") \
-        .select("*") \
-        .eq("name", name) \
-        .eq("size", size) \
-        .execute()
+        response = supabase.table("products") \
+            .select("*") \
+            .eq("name", name) \
+            .eq("size", size) \
+            .execute()
 
-    if not response.data:
-        raise HTTPException(status_code=404, detail="Product not found")
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Product not found")
 
-    product = response.data[0]
+        product = response.data[0]
 
-    if product["stock"] < quantity:
-        raise HTTPException(status_code=400, detail="Not enough stock")
+        if product.get("stock", 0) < quantity:
+            raise HTTPException(status_code=400, detail="Not enough stock")
 
-    new_stock = product["stock"] - quantity
+        new_stock = product["stock"] - quantity
 
-    # ✅ UPDATE STOCK
-    supabase.table("products").update({
-        "stock": new_stock
-    }).eq("id", product["id"]).execute()
+        # UPDATE STOCK
+        supabase.table("products").update({
+            "stock": new_stock
+        }).eq("id", product["id"]).execute()
 
-    # ✅ FIXED: RECORD SALE PROPERLY
-    supabase.table("sales_history").insert({
-        "product_id": product["id"],
-        "name": product["name"],
-        "quantity_sold": quantity
-    }).execute()
+        # RECORD SALE
+        supabase.table("sales_history").insert({
+            "product_id": product["id"],
+            "name": product["name"],
+            "quantity_sold": quantity
+        }).execute()
 
-    return {
-        "message": "Sale recorded",
-        "remaining_stock": new_stock
-    }
+        return {
+            "message": "Sale recorded",
+            "remaining_stock": new_stock
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ ALERTS
 @router.get("/alerts")
 def get_alerts():
     response = supabase.table("products").select("*").execute()
-    products = response.data
+    products = response.data or []
 
     alerts = []
 
@@ -180,7 +206,6 @@ def get_alerts():
         stock = p.get("stock", 0)
         min_stock = p.get("min_stock", 0)
 
-        # LOW STOCK
         if stock <= min_stock:
             alerts.append({
                 "type": "low_stock",
@@ -189,13 +214,11 @@ def get_alerts():
                 "stock": stock
             })
 
-        # EXPIRY
         if p.get("expiry_date"):
             expiry = datetime.fromisoformat(p["expiry_date"])
 
             if expiry < datetime.now():
                 alerts.append({"type": "expired", "product": p["name"]})
-
             elif expiry < datetime.now() + timedelta(days=7):
                 alerts.append({"type": "expiring_soon", "product": p["name"]})
 
