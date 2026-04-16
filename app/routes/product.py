@@ -258,3 +258,66 @@ def get_sales_history():
         .order("created_at", desc=True) \
         .execute()
     return res.data
+
+
+
+@router.put("/{product_id}")
+def edit_product(product_id: str, data: dict):
+    try:
+        existing = supabase.table("products").select("*").eq("id", product_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        product = existing.data[0]
+
+        update_data = {
+            "name": data.get("name", product["name"]),
+            "size": data.get("size", product["size"]),
+            "price": float(data.get("price", product["price"])),
+            "stock": int(data.get("stock", product["stock"])),
+            "category_id": data.get("category_id", product.get("category_id")),
+            "expiry_date": data.get("expiry_date", product.get("expiry_date")),
+            "min_stock": data.get("min_stock", product.get("min_stock"))
+        }
+
+        res = supabase.table("products").update(update_data).eq("id", product_id).execute()
+
+        return {"message": "Product updated", "data": res.data}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+@router.get("/sales-summary/today")
+def sales_summary_today():
+    try:
+        res = supabase.table("sales_history").select("*").execute()
+        sales = res.data or []
+
+        today = datetime.now().date()
+
+        total_sales = 0
+        total_items = 0
+
+        for s in sales:
+            created = s.get("created_at")
+            if not created:
+                continue
+
+            date = datetime.fromisoformat(created).date()
+
+            if date == today:
+                total_sales += s.get("quantity_sold", 0)
+                total_items += 1
+
+        return {
+            "date": str(today),
+            "total_items_sold": total_items,
+            "total_units_sold": total_sales
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
