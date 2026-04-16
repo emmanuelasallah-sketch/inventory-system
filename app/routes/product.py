@@ -6,7 +6,7 @@ router = APIRouter(prefix="/products", tags=["Products"])
 
 
 # 🔧 HELPER
-def normalize_text(value: str):
+def normalize(value: str):
     return value.strip().title() if value else None
 
 
@@ -14,58 +14,55 @@ def normalize_text(value: str):
 @router.post("/")
 def create_product(product: dict):
     try:
-        name = normalize_text(product.get("name"))
-        size = normalize_text(product.get("size"))
+        name = normalize(product.get("name"))
+        size = normalize(product.get("size"))
         stock = int(product.get("stock") or 0)
         price = float(product.get("price") or 0)
         category_id = product.get("category_id")
 
         if not name or not size:
-            raise HTTPException(status_code=400, detail="Name and size are required")
+            raise HTTPException(400, "Name and size required")
 
-        # 🔍 CHECK EXISTING
         existing = supabase.table("products") \
             .select("*") \
             .eq("name", name) \
             .eq("size", size) \
             .execute()
 
-        # ✅ UPDATE
+        # UPDATE
         if existing.data:
-            existing_product = existing.data[0]
-            new_stock = existing_product.get("stock", 0) + stock
+            p = existing.data[0]
+            new_stock = p["stock"] + stock
 
             supabase.table("products").update({
                 "stock": new_stock,
-                "price": price if price > 0 else existing_product.get("price", 0),
-                "category_id": category_id or existing_product.get("category_id")
-            }).eq("id", existing_product["id"]).execute()
+                "price": price if price > 0 else p["price"],
+                "category_id": category_id or p["category_id"],
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", p["id"]).execute()
 
             # STOCK HISTORY
             if stock > 0:
                 supabase.table("stock_history").insert({
-                    "product_id": existing_product["id"],
+                    "product_id": p["id"],
                     "name": name,
                     "quantity_added": stock
                 }).execute()
 
             return {"message": "Stock updated", "new_stock": new_stock}
 
-        # 🆕 CREATE
-        new_product = supabase.table("products").insert({
+        # CREATE
+        res = supabase.table("products").insert({
             "name": name,
             "size": size,
             "price": price,
             "stock": stock,
             "category_id": category_id,
             "expiry_date": product.get("expiry_date"),
-            "min_stock": int(product.get("min_stock") or 5)
+            "min_stock": product.get("min_stock", 5)
         }).execute()
 
-        if not new_product.data:
-            raise HTTPException(status_code=500, detail="Failed to create product")
-
-        created = new_product.data[0]
+        created = res.data[0]
 
         # STOCK HISTORY
         if stock > 0:
@@ -78,21 +75,20 @@ def create_product(product: dict):
         return created
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
 
-# ✅ GET PRODUCTS (WITH FILTER + CATEGORY NAME)
+# ✅ GET PRODUCTS (WITH CATEGORY JOIN)
 @router.get("/")
 def get_products(category_id: str = None):
     try:
         query = supabase.table("products").select("*, categories(name)")
 
-        # ✅ FILTER
         if category_id:
             query = query.eq("category_id", category_id)
 
-        response = query.execute()
-        products = response.data or []
+        res = query.execute()
+        products = res.data or []
 
         for p in products:
             stock = p.get("stock", 0)
@@ -106,218 +102,94 @@ def get_products(category_id: str = None):
         return products
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
 
-# ✅ GET CATEGORIES
-@router.get("/categories")
-def get_categories():
-    res = supabase.table("categories").select("*").execute()
-    return res.data
-
-
-# ✅ DELETE PRODUCT
-@router.delete("/{product_id}")
-def delete_product(product_id: str):
-    res = supabase.table("products").delete().eq("id", product_id).execute()
-
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    return {"message": "Product deleted"}
-
-
-# ✅ STOCK UPDATE
-@router.post("/stock")
-def update_stock(data: dict):
-    try:
-        product_id = data.get("product_id")
-        change = int(data.get("change") or 0)
-
-        response = supabase.table("products").select("*").eq("id", product_id).execute()
-
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        product = response.data[0]
-        new_stock = product.get("stock", 0) + change
-
-        if new_stock < 0:
-            raise HTTPException(status_code=400, detail="Not enough stock")
-
-        supabase.table("products").update({
-            "stock": new_stock
-        }).eq("id", product_id).execute()
-
-        # SALES HISTORY
-        if change < 0:
-            supabase.table("sales_history").insert({
-                "product_id": product_id,
-                "name": product["name"],
-                "quantity_sold": abs(change)
-            }).execute()
-
-        return {"message": "Stock updated", "new_stock": new_stock}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ✅ SELL PRODUCT
-@router.post("/sell")
-def sell_product(data: dict):
-    try:
-        name = normalize_text(data.get("name"))
-        size = normalize_text(data.get("size"))
-        quantity = int(data.get("quantity") or 0)
-
-        if not name or not size or quantity <= 0:
-            raise HTTPException(status_code=400, detail="Invalid input")
-
-        response = supabase.table("products") \
-            .select("*") \
-            .eq("name", name) \
-            .eq("size", size) \
-            .execute()
-
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Product not found")
-
-        product = response.data[0]
-
-        if product.get("stock", 0) < quantity:
-            raise HTTPException(status_code=400, detail="Not enough stock")
-
-        new_stock = product["stock"] - quantity
-
-        supabase.table("products").update({
-            "stock": new_stock
-        }).eq("id", product["id"]).execute()
-
-        supabase.table("sales_history").insert({
-            "product_id": product["id"],
-            "name": product["name"],
-            "quantity_sold": quantity
-        }).execute()
-
-        return {
-            "message": "Sale recorded",
-            "remaining_stock": new_stock
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ✅ ALERTS
-@router.get("/alerts")
-def get_alerts():
-    response = supabase.table("products").select("*").execute()
-    products = response.data or []
-
-    alerts = []
-
-    for p in products:
-        stock = p.get("stock", 0)
-        min_stock = p.get("min_stock", 0)
-
-        if stock <= min_stock:
-            alerts.append({
-                "type": "low_stock",
-                "product": p["name"],
-                "size": p.get("size"),
-                "stock": stock
-            })
-
-        if p.get("expiry_date"):
-            expiry = datetime.fromisoformat(p["expiry_date"])
-
-            if expiry < datetime.now():
-                alerts.append({"type": "expired", "product": p["name"]})
-            elif expiry < datetime.now() + timedelta(days=7):
-                alerts.append({"type": "expiring_soon", "product": p["name"]})
-
-    return alerts
-
-
-# ✅ STOCK HISTORY
-@router.get("/stock_history")
-def get_stock_history():
-    res = supabase.table("stock_history") \
-        .select("*") \
-        .order("created_at", desc=True) \
-        .execute()
-    return res.data
-
-
-# ✅ SALES HISTORY
-@router.get("/sales_history")
-def get_sales_history():
-    res = supabase.table("sales_history") \
-        .select("*") \
-        .order("created_at", desc=True) \
-        .execute()
-    return res.data
-
-
-
+# ✅ EDIT PRODUCT
 @router.put("/{product_id}")
 def edit_product(product_id: str, data: dict):
     try:
         existing = supabase.table("products").select("*").eq("id", product_id).execute()
 
         if not existing.data:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(404, "Product not found")
 
-        product = existing.data[0]
+        p = existing.data[0]
 
         update_data = {
-            "name": data.get("name", product["name"]),
-            "size": data.get("size", product["size"]),
-            "price": float(data.get("price", product["price"])),
-            "stock": int(data.get("stock", product["stock"])),
-            "category_id": data.get("category_id", product.get("category_id")),
-            "expiry_date": data.get("expiry_date", product.get("expiry_date")),
-            "min_stock": data.get("min_stock", product.get("min_stock"))
+            "name": normalize(data.get("name")) or p["name"],
+            "size": normalize(data.get("size")) or p["size"],
+            "price": float(data.get("price") or p["price"]),
+            "stock": int(data.get("stock") or p["stock"]),
+            "category_id": data.get("category_id") or p.get("category_id"),
+            "expiry_date": data.get("expiry_date") or p.get("expiry_date"),
+            "min_stock": data.get("min_stock") or p.get("min_stock"),
+            "updated_at": datetime.now().isoformat()
         }
 
-        res = supabase.table("products").update(update_data).eq("id", product_id).execute()
+        supabase.table("products").update(update_data).eq("id", product_id).execute()
 
-        return {"message": "Product updated", "data": res.data}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-
-@router.get("/sales-summary/today")
-def sales_summary_today():
-    try:
-        res = supabase.table("sales_history").select("*").execute()
-        sales = res.data or []
-
-        today = datetime.now().date()
-
-        total_sales = 0
-        total_items = 0
-
-        for s in sales:
-            created = s.get("created_at")
-            if not created:
-                continue
-
-            date = datetime.fromisoformat(created).date()
-
-            if date == today:
-                total_sales += s.get("quantity_sold", 0)
-                total_items += 1
-
-        return {
-            "date": str(today),
-            "total_items_sold": total_items,
-            "total_units_sold": total_sales
-        }
+        return {"message": "Product updated"}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
+
+
+# ✅ DELETE
+@router.delete("/{product_id}")
+def delete_product(product_id: str):
+    res = supabase.table("products").delete().eq("id", product_id).execute()
+
+    if not res.data:
+        raise HTTPException(404, "Not found")
+
+    return {"message": "Deleted"}
+
+
+# ✅ STOCK UPDATE
+@router.post("/stock")
+def update_stock(data: dict):
+    product_id = data.get("product_id")
+    change = int(data.get("change") or 0)
+
+    res = supabase.table("products").select("*").eq("id", product_id).execute()
+
+    if not res.data:
+        raise HTTPException(404, "Not found")
+
+    p = res.data[0]
+    new_stock = p["stock"] + change
+
+    if new_stock < 0:
+        raise HTTPException(400, "Not enough stock")
+
+    supabase.table("products").update({
+        "stock": new_stock
+    }).eq("id", product_id).execute()
+
+    if change < 0:
+        supabase.table("sales_history").insert({
+            "product_id": product_id,
+            "name": p["name"],
+            "quantity_sold": abs(change)
+        }).execute()
+
+    return {"message": "Stock updated"}
+
+
+# ✅ ALERTS
+@router.get("/alerts")
+def alerts():
+    res = supabase.table("products").select("*").execute()
+    products = res.data or []
+
+    alerts = []
+
+    for p in products:
+        if p["stock"] <= p.get("min_stock", 0):
+            alerts.append({
+                "type": "low_stock",
+                "product": p["name"]
+            })
+
+    return alerts

@@ -1,87 +1,122 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from app.supabase_client import supabase
-
 
 router = APIRouter(prefix="/sales", tags=["Sales"])
 
 
+# =========================
+# 📥 GET SALES
+# =========================
 @router.get("/")
 def get_sales():
-    res = supabase.table("sales").select("*").execute()
-    return res.data
+    res = supabase.table("sales").select("*").order("created_at", desc=True).execute()
+    return res.data or []
 
 
-
+# =========================
+# 🛒 CHECKOUT (CART SYSTEM)
+# =========================
 @router.post("/checkout")
 def checkout(data: dict):
-    items = data.get("items", [])
+    try:
+        items = data.get("items", [])
 
-    if not items:
-        return {"error": "Cart is empty"}
+        if not items:
+            raise HTTPException(status_code=400, detail="Cart is empty")
 
-    total_amount = 0
-    processed_items = []
+        total_amount = 0
+        validated_items = []
 
-    # STEP 1: Validate all items first
-    for item in items:
-        product_res = (
-            supabase.table("products")
-            .select("*")
-            .ilike("name", f"%{item['product_name']}%")
-            .eq("size", item["size"])
-            .limit(1)
-            .execute()
-        )
+        # =========================
+        # STEP 1: VALIDATE ALL ITEMS
+        # =========================
+        for item in items:
+            name = item.get("product_name")
+            size = item.get("size")
+            qty = int(item.get("quantity") or 0)
 
-        if not product_res.data:
-            return {"error": f"{item['product_name']} not found"}
+            if not name or not size or qty <= 0:
+                raise HTTPException(status_code=400, detail="Invalid cart item")
 
-        product = product_res.data[0]
+            product_res = supabase.table("products") \
+                .select("*") \
+                .eq("name", name.strip().title()) \
+                .eq("size", size.strip().title()) \
+                .limit(1) \
+                .execute()
 
-        if product["quantity"] < item["quantity"]:
-            return {"error": f"Not enough stock for {product['name']}"}
+            if not product_res.data:
+                raise HTTPException(status_code=404, detail=f"{name} not found")
 
-        processed_items.append({
-            "product": product,
-            "quantity": item["quantity"]
-        })
+            product = product_res.data[0]
 
-    # STEP 2: Create Order
-    order_res = supabase.table("orders").insert({
-        "total_amount": 0
-    }).execute()
+            if product.get("stock", 0) < qty:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Not enough stock for {product['name']}"
+                )
 
-    order_id = order_res.data[0]["id"]
+            validated_items.append({
+                "product": product,
+                "quantity": qty
+            })
 
-    # STEP 3: Process each item
-    for item in processed_items:
-        product = item["product"]
-        qty = item["quantity"]
-
-        new_qty = product["quantity"] - qty
-
-        # update stock
-        supabase.table("products").update({
-            "quantity": new_qty
-        }).eq("id", product["id"]).execute()
-
-        # insert order item
-        supabase.table("order_items").insert({
-            "order_id": order_id,
-            "product_id": product["id"],
-            "quantity": qty,
-            "price": product["price"]
+        # =========================
+        # STEP 2: CREATE ORDER
+        # =========================
+        order_res = supabase.table("orders").insert({
+            "total_amount": 0
         }).execute()
 
-        total_amount += product["price"] * qty
+        if not order_res.data:
+            raise HTTPException(status_code=500, detail="Failed to create order")
 
-    # STEP 4: update total
-    supabase.table("orders").update({
-        "total_amount": total_amount
-    }).eq("id", order_id).execute()
+        order_id = order_res.data[0]["id"]
 
-    return {
-        "message": "Order completed",
-        "order_id": order_id,
-        "total": total_amount
-    }
+        # =========================
+        # STEP 3: PROCESS ITEMS
+        # =========================
+        for item in validated_items:
+            product = item["product"]
+            qty = item["quantity"]
+
+            new_stock = product["stock"] - qty
+
+            # update stock
+            supabase.table("products").update({
+                "stock": new_stock
+            }).eq("id", product["id"]).execute()
+
+            # insert order item
+            supabase.table("order_items").insert({
+                "order_id": order_id,
+                "product_id": product["id"],
+                "quantity": qty,
+                "price": product["price"]
+            }).execute()
+
+            total_amount += float(product["price"]) * qty
+
+            # optional: sales history
+            supabase.table("sales_history").insert({
+                "product_id": product["id"],
+                "name": product["name"],
+                "quantity_sold": qty
+            }).execute()
+
+        # =========================
+        # STEP 4: UPDATE ORDER TOTAL
+        # =========================
+        supabase.table("orders") \
+            .update({"total_amount": total_amount}) \
+            .eq("id", order_id) \
+            .execute()
+
+        return {
+            "message": "Order completed",
+            "order_id": order_id,
+            "total": total_amount
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

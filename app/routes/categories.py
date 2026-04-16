@@ -4,74 +4,137 @@ from app.supabase_client import supabase
 router = APIRouter(prefix="/categories", tags=["Categories"])
 
 
-# ✅ LIST ALL CATEGORIES
+# =========================
+# 🔧 HELPER
+# =========================
+def normalize(name: str):
+    if not name:
+        return None
+    return name.strip().title()
+
+
+# =========================
+# 📥 GET ALL CATEGORIES
+# =========================
 @router.get("/")
 def get_categories():
-    res = supabase.table("categories").select("*").order("name").execute()
-    return res.data or []
+    try:
+        res = supabase.table("categories") \
+            .select("*") \
+            .order("name") \
+            .execute()
+
+        return res.data or []
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ✅ CREATE CATEGORY
+# =========================
+# ➕ CREATE CATEGORY
+# =========================
 @router.post("/")
 def create_category(data: dict):
-    name = data.get("name")
+    try:
+        name = normalize(data.get("name"))
 
-    if not name:
-        raise HTTPException(status_code=400, detail="Category name required")
+        if not name:
+            raise HTTPException(status_code=400, detail="Category name is required")
 
-    name = name.strip().title()
+        # 🔍 case-insensitive check
+        existing = supabase.table("categories") \
+            .select("*") \
+            .ilike("name", name) \
+            .execute()
 
-    existing = supabase.table("categories").select("*").eq("name", name).execute()
+        if existing.data:
+            return {
+                "message": "Category already exists",
+                "data": existing.data[0]
+            }
 
-    if existing.data:
-        return {"message": "Category already exists"}
+        res = supabase.table("categories").insert({
+            "name": name
+        }).execute()
 
-    res = supabase.table("categories").insert({
-        "name": name
-    }).execute()
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create category")
 
-    return res.data[0]
+        return {
+            "message": "Category created",
+            "data": res.data[0]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ✅ UPDATE CATEGORY
+# =========================
+# ✏️ UPDATE CATEGORY
+# =========================
 @router.put("/{category_id}")
 def update_category(category_id: str, data: dict):
-    name = data.get("name")
+    try:
+        name = normalize(data.get("name"))
 
-    if not name:
-        raise HTTPException(status_code=400, detail="Name required")
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
 
-    res = supabase.table("categories") \
-        .update({"name": name.strip().title()}) \
-        .eq("id", category_id) \
-        .execute()
+        # prevent duplicates
+        duplicate = supabase.table("categories") \
+            .select("*") \
+            .ilike("name", name) \
+            .neq("id", category_id) \
+            .execute()
 
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Category not found")
+        if duplicate.data:
+            raise HTTPException(status_code=400, detail="Category already exists")
 
-    return {"message": "Category updated"}
+        res = supabase.table("categories") \
+            .update({"name": name}) \
+            .eq("id", category_id) \
+            .execute()
+
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Category not found")
+
+        return {
+            "message": "Category updated",
+            "data": res.data[0]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ❗ SAFE DELETE (IMPORTANT UPGRADE)
+# =========================
+# 🗑 DELETE CATEGORY (SAFE)
+# =========================
 @router.delete("/{category_id}")
 def delete_category(category_id: str):
+    try:
+        # check if category is in use
+        used = supabase.table("products") \
+            .select("id") \
+            .eq("category_id", category_id) \
+            .limit(1) \
+            .execute()
 
-    # 🔍 check if used in products
-    products = supabase.table("products") \
-        .select("id") \
-        .eq("category_id", category_id) \
-        .limit(1) \
-        .execute()
+        if used.data:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete category: it is used by products"
+            )
 
-    if products.data:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete category in use by products"
-        )
+        res = supabase.table("categories") \
+            .delete() \
+            .eq("id", category_id) \
+            .execute()
 
-    res = supabase.table("categories").delete().eq("id", category_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Category not found")
 
-    if not res.data:
-        raise HTTPException(status_code=404, detail="Category not found")
+        return {"message": "Category deleted"}
 
-    return {"message": "Category deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
