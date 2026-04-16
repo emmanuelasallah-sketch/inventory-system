@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 router = APIRouter(prefix="/products", tags=["Products"])
 
 
-# 🔧 HELPER: CLEAN INPUT
+# 🔧 HELPER
 def normalize_text(value: str):
     return value.strip().title() if value else None
 
@@ -18,28 +18,30 @@ def create_product(product: dict):
         size = normalize_text(product.get("size"))
         stock = int(product.get("stock") or 0)
         price = float(product.get("price") or 0)
+        category_id = product.get("category_id")
 
         if not name or not size:
             raise HTTPException(status_code=400, detail="Name and size are required")
 
-        # 🔍 Check if product exists
+        # 🔍 CHECK EXISTING
         existing = supabase.table("products") \
             .select("*") \
             .eq("name", name) \
             .eq("size", size) \
             .execute()
 
-        # ✅ UPDATE EXISTING PRODUCT
+        # ✅ UPDATE
         if existing.data:
             existing_product = existing.data[0]
             new_stock = existing_product.get("stock", 0) + stock
 
             supabase.table("products").update({
                 "stock": new_stock,
-                "price": price if price > 0 else existing_product.get("price", 0)
+                "price": price if price > 0 else existing_product.get("price", 0),
+                "category_id": category_id or existing_product.get("category_id")
             }).eq("id", existing_product["id"]).execute()
 
-            # RECORD STOCK HISTORY
+            # STOCK HISTORY
             if stock > 0:
                 supabase.table("stock_history").insert({
                     "product_id": existing_product["id"],
@@ -49,13 +51,13 @@ def create_product(product: dict):
 
             return {"message": "Stock updated", "new_stock": new_stock}
 
-        # 🆕 CREATE NEW PRODUCT
+        # 🆕 CREATE
         new_product = supabase.table("products").insert({
             "name": name,
             "size": size,
             "price": price,
             "stock": stock,
-            "category": normalize_text(product.get("category")),
+            "category_id": category_id,
             "expiry_date": product.get("expiry_date"),
             "min_stock": int(product.get("min_stock") or 5)
         }).execute()
@@ -65,7 +67,7 @@ def create_product(product: dict):
 
         created = new_product.data[0]
 
-        # RECORD STOCK HISTORY
+        # STOCK HISTORY
         if stock > 0:
             supabase.table("stock_history").insert({
                 "product_id": created["id"],
@@ -79,24 +81,39 @@ def create_product(product: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ✅ GET PRODUCTS
+# ✅ GET PRODUCTS (WITH FILTER + CATEGORY NAME)
 @router.get("/")
-def get_products():
+def get_products(category_id: str = None):
     try:
-        response = supabase.table("products").select("*").execute()
+        query = supabase.table("products").select("*, categories(name)")
+
+        # ✅ FILTER
+        if category_id:
+            query = query.eq("category_id", category_id)
+
+        response = query.execute()
         products = response.data or []
 
         for p in products:
             stock = p.get("stock", 0)
+            price = p.get("price", 0)
             min_stock = p.get("min_stock", 0)
 
             p["low_stock"] = stock <= min_stock
-            p["total_value"] = stock * p.get("price", 0)
+            p["total_value"] = stock * price
+            p["category_name"] = p.get("categories", {}).get("name")
 
         return products
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ✅ GET CATEGORIES
+@router.get("/categories")
+def get_categories():
+    res = supabase.table("categories").select("*").execute()
+    return res.data
 
 
 # ✅ DELETE PRODUCT
@@ -132,7 +149,7 @@ def update_stock(data: dict):
             "stock": new_stock
         }).eq("id", product_id).execute()
 
-        # RECORD SALES HISTORY
+        # SALES HISTORY
         if change < 0:
             supabase.table("sales_history").insert({
                 "product_id": product_id,
@@ -173,12 +190,10 @@ def sell_product(data: dict):
 
         new_stock = product["stock"] - quantity
 
-        # UPDATE STOCK
         supabase.table("products").update({
             "stock": new_stock
         }).eq("id", product["id"]).execute()
 
-        # RECORD SALE
         supabase.table("sales_history").insert({
             "product_id": product["id"],
             "name": product["name"],
