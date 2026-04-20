@@ -6,7 +6,7 @@ router = APIRouter(prefix="/products", tags=["Products"])
 
 
 # 🔧 HELPER
-def normalize(value: str):
+def normalize_text(value: str | None):
     return value.strip().title() if value else None
 
 
@@ -14,69 +14,65 @@ def normalize(value: str):
 @router.post("/")
 def create_product(product: dict):
     try:
-        name = normalize(product.get("name"))
-        size = normalize(product.get("size"))
+        name = normalize_text(product.get("name"))
+        size = normalize_text(product.get("size"))
+
         stock = int(product.get("stock") or 0)
-        price = float(product.get("price") or 0)
-        category_id = product.get("category_id")
+        price = float(product.get("price") or 0)  # COST PRICE
+        selling_price = product.get("selling_price")
+        category_id = product.get("category_id") or None  # OPTIONAL
+
+        if selling_price:
+            selling_price = float(selling_price)
 
         if not name or not size:
-            raise HTTPException(400, "Name and size required")
+            raise HTTPException(status_code=400, detail="Name and size are required")
 
+        # 🔍 CHECK EXISTING PRODUCT
         existing = supabase.table("products") \
             .select("*") \
             .eq("name", name) \
             .eq("size", size) \
             .execute()
 
-        # UPDATE
+        # ✅ UPDATE EXISTING
         if existing.data:
-            p = existing.data[0]
-            new_stock = p["stock"] + stock
+            existing_product = existing.data[0]
+
+            new_stock = existing_product.get("stock", 0) + stock
+
+            # 🧠 SELLING PRICE LOGIC
+            final_selling_price = (
+                selling_price
+                if selling_price is not None
+                else existing_product.get("selling_price")
+            )
 
             supabase.table("products").update({
                 "stock": new_stock,
-                "price": price if price > 0 else p["price"],
-                "category_id": category_id or p["category_id"],
-                "updated_at": datetime.now().isoformat()
-            }).eq("id", p["id"]).execute()
-
-            # STOCK HISTORY
-            if stock > 0:
-                supabase.table("stock_history").insert({
-                    "product_id": p["id"],
-                    "name": name,
-                    "quantity_added": stock
-                }).execute()
+                "price": price if price > 0 else existing_product.get("price"),
+                "selling_price": final_selling_price,
+                "category_id": category_id or existing_product.get("category_id")
+            }).eq("id", existing_product["id"]).execute()
 
             return {"message": "Stock updated", "new_stock": new_stock}
 
-        # CREATE
-        res = supabase.table("products").insert({
+        # 🆕 CREATE NEW PRODUCT
+        new_product = supabase.table("products").insert({
             "name": name,
             "size": size,
             "price": price,
+            "selling_price": selling_price,
             "stock": stock,
             "category_id": category_id,
             "expiry_date": product.get("expiry_date"),
-            "min_stock": product.get("min_stock", 5)
+            "min_stock": int(product.get("min_stock") or 5)
         }).execute()
 
-        created = res.data[0]
-
-        # STOCK HISTORY
-        if stock > 0:
-            supabase.table("stock_history").insert({
-                "product_id": created["id"],
-                "name": name,
-                "quantity_added": stock
-            }).execute()
-
-        return created
+        return new_product.data[0]
 
     except Exception as e:
-        raise HTTPException(500, str(e))
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ✅ GET PRODUCTS (WITH CATEGORY JOIN)
 @router.get("/")
@@ -98,6 +94,7 @@ def get_products(category_id: str = None):
             p["low_stock"] = stock <= min_stock
             p["total_value"] = stock * price
             p["category_name"] = p.get("categories", {}).get("name")
+            p["selling_price"] = p.get("selling_price")
 
         return products
 
@@ -117,8 +114,8 @@ def edit_product(product_id: str, data: dict):
         p = existing.data[0]
 
         update_data = {
-            "name": normalize(data.get("name")) or p["name"],
-            "size": normalize(data.get("size")) or p["size"],
+            "name": normalize_text(data.get("name")) or p["name"],
+            "size": normalize_text(data.get("size")) or p["size"],
             "price": float(data.get("price") or p["price"]),
             "stock": int(data.get("stock") or p["stock"]),
             "category_id": data.get("category_id") or p.get("category_id"),
