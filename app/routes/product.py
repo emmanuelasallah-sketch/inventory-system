@@ -18,9 +18,11 @@ def create_product(product: dict):
         size = normalize_text(product.get("size"))
 
         stock = int(product.get("stock") or 0)
-        price = float(product.get("price") or 0)  # COST PRICE
+        price = float(product.get("price") or 0)
+
         selling_price = product.get("selling_price")
-        category_id = product.get("category_id") or None  # OPTIONAL
+        category_id = product.get("category_id") or None
+        expiry_date = product.get("expiry_date") or None  # ✅ FIXED
 
         if selling_price:
             selling_price = float(selling_price)
@@ -38,10 +40,8 @@ def create_product(product: dict):
         # ✅ UPDATE EXISTING
         if existing.data:
             existing_product = existing.data[0]
-
             new_stock = existing_product.get("stock", 0) + stock
 
-            # 🧠 SELLING PRICE LOGIC
             final_selling_price = (
                 selling_price
                 if selling_price is not None
@@ -52,7 +52,8 @@ def create_product(product: dict):
                 "stock": new_stock,
                 "price": price if price > 0 else existing_product.get("price"),
                 "selling_price": final_selling_price,
-                "category_id": category_id or existing_product.get("category_id")
+                "category_id": category_id or existing_product.get("category_id"),
+                "expiry_date": expiry_date or existing_product.get("expiry_date")  # ✅ FIXED
             }).eq("id", existing_product["id"]).execute()
 
             return {"message": "Stock updated", "new_stock": new_stock}
@@ -65,7 +66,7 @@ def create_product(product: dict):
             "selling_price": selling_price,
             "stock": stock,
             "category_id": category_id,
-            "expiry_date": product.get("expiry_date"),
+            "expiry_date": expiry_date,  # ✅ FIXED
             "min_stock": int(product.get("min_stock") or 5)
         }).execute()
 
@@ -74,7 +75,8 @@ def create_product(product: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ✅ GET PRODUCTS (WITH CATEGORY JOIN)
+
+# ✅ GET PRODUCTS
 @router.get("/")
 def get_products(category_id: str = None):
     try:
@@ -99,7 +101,7 @@ def get_products(category_id: str = None):
         return products
 
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ EDIT PRODUCT
@@ -109,17 +111,34 @@ def edit_product(product_id: str, data: dict):
         existing = supabase.table("products").select("*").eq("id", product_id).execute()
 
         if not existing.data:
-            raise HTTPException(404, "Product not found")
+            raise HTTPException(status_code=404, detail="Product not found")
 
         p = existing.data[0]
+
+        # ✅ HANDLE SELLING PRICE CLEANLY
+        new_selling_price = data.get("selling_price")
+        if new_selling_price == "" or new_selling_price is None:
+            final_selling_price = p.get("selling_price")
+        else:
+            final_selling_price = float(new_selling_price)
+
+        # ✅ HANDLE EXPIRY CLEANLY
+        new_expiry = data.get("expiry_date")
+        if new_expiry == "":
+            final_expiry = None  # user cleared it
+        elif new_expiry is None:
+            final_expiry = p.get("expiry_date")  # keep old
+        else:
+            final_expiry = new_expiry
 
         update_data = {
             "name": normalize_text(data.get("name")) or p["name"],
             "size": normalize_text(data.get("size")) or p["size"],
             "price": float(data.get("price") or p["price"]),
+            "selling_price": final_selling_price,  # ✅ ADDED
             "stock": int(data.get("stock") or p["stock"]),
             "category_id": data.get("category_id") or p.get("category_id"),
-            "expiry_date": data.get("expiry_date") or p.get("expiry_date"),
+            "expiry_date": final_expiry,  # ✅ FIXED
             "min_stock": data.get("min_stock") or p.get("min_stock"),
             "updated_at": datetime.now().isoformat()
         }
@@ -129,7 +148,7 @@ def edit_product(product_id: str, data: dict):
         return {"message": "Product updated"}
 
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ DELETE
@@ -138,7 +157,7 @@ def delete_product(product_id: str):
     res = supabase.table("products").delete().eq("id", product_id).execute()
 
     if not res.data:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     return {"message": "Deleted"}
 
@@ -152,13 +171,13 @@ def update_stock(data: dict):
     res = supabase.table("products").select("*").eq("id", product_id).execute()
 
     if not res.data:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     p = res.data[0]
     new_stock = p["stock"] + change
 
     if new_stock < 0:
-        raise HTTPException(400, "Not enough stock")
+        raise HTTPException(status_code=400, detail="Not enough stock")
 
     supabase.table("products").update({
         "stock": new_stock
