@@ -78,14 +78,17 @@ def create_product(product: dict):
 
 # ✅ GET PRODUCTS
 @router.get("/")
-def get_products(category_id: str = None):
+def get_products(category_id: str = None, search: str = None):
     try:
-        query = supabase.table("products").select("*")  # ❗ REMOVE JOIN
+        query_builder = supabase.table("products").select("*")
 
         if category_id:
-            query = query.eq("category_id", category_id)
+            query_builder = query_builder.eq("category_id", category_id)
 
-        res = query.execute()
+        if search:
+            query_builder = query_builder.ilike("name", f"%{search}%")
+
+        res = query_builder.execute()
         products = res.data or []
 
         for p in products:
@@ -96,14 +99,11 @@ def get_products(category_id: str = None):
             p["low_stock"] = stock <= min_stock
             p["total_value"] = stock * price
 
-            # SAFE category name
-            p["category_name"] = None
-
         return products
 
     except Exception as e:
-        print("ERROR:", str(e))  # 🔍 IMPORTANT
-        raise HTTPException(status_code=500, detail=str(e))
+        print("ERROR:", e)
+        raise HTTPException(500, str(e))
 
 # ✅ EDIT PRODUCT
 @router.put("/{product_id}")
