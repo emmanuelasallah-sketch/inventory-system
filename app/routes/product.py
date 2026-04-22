@@ -95,7 +95,8 @@ def get_products(category_id: str = None):
 
             p["low_stock"] = stock <= min_stock
             p["total_value"] = stock * price
-            p["category_name"] = p.get("categories", {}).get("name")
+            category = p.get("categories")
+            p["category_name"] = category["name"] if category else None
             p["selling_price"] = p.get("selling_price")
 
         return products
