@@ -80,7 +80,7 @@ def create_product(product: dict):
 @router.get("/")
 def get_products(category_id: str = None):
     try:
-        query = supabase.table("products").select("*, categories(name)")
+        query = supabase.table("products").select("*")  # ❗ REMOVE JOIN
 
         if category_id:
             query = query.eq("category_id", category_id)
@@ -95,15 +95,15 @@ def get_products(category_id: str = None):
 
             p["low_stock"] = stock <= min_stock
             p["total_value"] = stock * price
-            category = p.get("categories")
-            p["category_name"] = category["name"] if category else None
-            p["selling_price"] = p.get("selling_price")
+
+            # SAFE category name
+            p["category_name"] = None
 
         return products
 
     except Exception as e:
+        print("ERROR:", str(e))  # 🔍 IMPORTANT
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ✅ EDIT PRODUCT
 @router.put("/{product_id}")
